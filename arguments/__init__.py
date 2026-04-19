@@ -130,6 +130,8 @@ class OptimizationParams(ParamGroup):
         self.percent_dense = 0.01
         self.lambda_dssim = 0
         self.lambda_lpips = 0
+        self.generated_view_weight = 0.2
+        self.confidence_floor = 0.15
         self.weight_constraint_init= 1
         self.weight_constraint_after = 0.2
         self.weight_decay_iteration = 5000
