@@ -177,14 +177,25 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         radii_list = []
         visibility_filter_list = []
         viewspace_point_tensor_list = []
+        confidence_list = []
+        is_real_view_list = []
         for viewpoint_cam in viewpoint_cams:
             render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage,cam_type=scene.dataset_type)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
             images.append(image.unsqueeze(0))
             if scene.dataset_type!="PanopticSports":
                 gt_image = viewpoint_cam.original_image.cuda()
+                cam_confidence = viewpoint_cam.confidence
+                if cam_confidence is None:
+                    cam_confidence = torch.ones((1, gt_image.shape[1], gt_image.shape[2]), device=gt_image.device, dtype=gt_image.dtype)
+                else:
+                    cam_confidence = cam_confidence.to(gt_image.device, dtype=gt_image.dtype)
+                confidence_list.append(cam_confidence.unsqueeze(0))
+                is_real_view_list.append(bool(viewpoint_cam.is_real_view))
             else:
                 gt_image  = viewpoint_cam['image'].cuda()
+                confidence_list.append(torch.ones((1, 1, gt_image.shape[1], gt_image.shape[2]), device=gt_image.device, dtype=gt_image.dtype))
+                is_real_view_list.append(True)
             
             gt_images.append(gt_image.unsqueeze(0))
             radii_list.append(radii.unsqueeze(0))
@@ -196,9 +207,16 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         visibility_filter = torch.cat(visibility_filter_list).any(dim=0)
         image_tensor = torch.cat(images,0)
         gt_image_tensor = torch.cat(gt_images,0)
-        # Loss
-        # breakpoint()
-        Ll1 = l1_loss(image_tensor, gt_image_tensor[:,:3,:,:])
+        confidence_tensor = torch.cat(confidence_list,0)
+        confidence_tensor = confidence_tensor.clamp(min=opt.confidence_floor)
+        base_view_weight = torch.tensor(
+            [1.0 if is_real else opt.generated_view_weight for is_real in is_real_view_list],
+            device=image_tensor.device,
+            dtype=image_tensor.dtype,
+        ).view(-1, 1, 1, 1)
+        final_weight = base_view_weight * confidence_tensor
+        weighted_abs = torch.abs(image_tensor - gt_image_tensor[:, :3, :, :]) * final_weight
+        Ll1 = weighted_abs.sum() / final_weight.sum().clamp_min(1e-8)
 
         psnr_ = psnr(image_tensor, gt_image_tensor).mean().double()
         # norm
